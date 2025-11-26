@@ -39,7 +39,8 @@ class HomeViewModel extends ChangeNotifier {
   }
 
   void loadArmyList(ListPa newList) {
-    _listPa = newList;
+    // If loading from a pre-parsed source, ensure tactical state is initialized
+    _listPa = _initializeUnitTacticalState(newList);
     notifyListeners();
   }
 
@@ -69,6 +70,46 @@ class HomeViewModel extends ChangeNotifier {
     return null;
   }
 
+  // --- WOUND & TACTICAL STATE INITIALIZATION (Replaces _applyWoundCorrection) ---
+
+  /// Initializes all units in the list by setting their current tracking state
+  /// (wounds, activation, modifiers) to zero/default.
+  ListPa _initializeUnitTacticalState(ListPa list) {
+    // 1. Initialize Combat Units
+    final List<UnitEntry> initializedCombatUnits = list.combatUnits.map((unit) {
+      // FIX: DO NOT apply the heuristic that forces wounds to 12.
+      // Trust the unit's baseWounds property (e.g., 4 for a monster).
+      return unit.copyWith(
+        currentWounds: 0,
+        isActivated: false,
+        attackModifier: 0,
+        defenseModifier: 0,
+        defenseDiceModifier: 0,
+        moraleModifier: 0,
+        // The UnitDetails model remains unchanged, preserving the correct baseWounds.
+      );
+    }).toList();
+
+    // 2. Initialize NCUs
+    final List<UnitEntry> initializedNCUs = list.ncus.map((unit) {
+      return unit.copyWith(
+        currentWounds: 0, // NCUs track wounds too, typically 1 or 0
+        isActivated: false,
+        // NCUs don't typically have modifiers, but setting them to 0 is safe
+        attackModifier: 0,
+        defenseModifier: 0,
+        defenseDiceModifier: 0,
+        moraleModifier: 0,
+      );
+    }).toList();
+
+    // Return a new ListPa with the fully initialized units lists
+    return list.copyWith(
+      combatUnits: initializedCombatUnits,
+      ncus: initializedNCUs,
+    );
+  }
+
   // --- CORE NEW LOGIC: CALCULATE ATTACK DICE BASED ON WOUNDS/RANK ---
 
   /// Determines the current dice count for a given attack profile based on unit wounds.
@@ -76,7 +117,7 @@ class HomeViewModel extends ChangeNotifier {
     final details = unit.unitDetails;
     if (details == null) return 0;
 
-    // Use the potentially corrected baseWounds from the state
+    // Use the correctly loaded baseWounds (e.g., 4 for monster, 12 for infantry)
     final maxWounds = details.baseWounds ?? 12;
     final woundsRemaining = maxWounds - unit.currentWounds;
 
@@ -97,7 +138,7 @@ class HomeViewModel extends ChangeNotifier {
     int rankIndex = 0; // Default to Rank 3 strength (0 wounds taken)
 
     if (maxWounds >= 12) {
-      // Determine the rank loss threshold: 6 for Cavalry, 4 for Infantry/Standard
+      // Logic for standard 12-wound units (Infantry/Cavalry)
       final isCavalry = details.tray?.toLowerCase() == 'cavalry';
       // Wounds remaining threshold to drop to Rank 2 (index 1)
       final rank2Threshold = isCavalry
@@ -114,10 +155,16 @@ class HomeViewModel extends ChangeNotifier {
       } else if (woundsRemaining <= rank1Threshold && woundsRemaining >= 1) {
         rankIndex = 2; // Rank 1 strength
       }
+    } else {
+      // Logic for low-wound units (Monsters, Solo units, etc. - e.g. 4 wounds)
+      // If the unit has a fixed number of wounds (like 4), it typically doesn't degrade.
+      // We assume it uses the maximum dice count (index 0) until destroyed.
+      rankIndex = 0;
     }
 
     // Safety check: ensure the index is within the bounds of the dice array
     if (rankIndex >= attackProfile.dice.length) {
+      // For low-wound units that only have one dice entry, this falls back to the first.
       rankIndex = attackProfile.dice.length - 1;
     }
 
@@ -203,38 +250,6 @@ class HomeViewModel extends ChangeNotifier {
     return descriptions;
   }
 
-  // --- WOUND CORRECTION HELPER (Using copyWith - model must support it) ---
-
-  /// Applies a fix to set baseWounds to 12 for combat units where the parsed value is too low.
-  ListPa _applyWoundCorrection(ListPa list) {
-    final List<UnitEntry> correctedCombatUnits = list.combatUnits.map((unit) {
-      final details = unit.unitDetails;
-
-      // Ensure we have details and that it's a combat unit (defense is not null)
-      if (details != null && details.defense != null) {
-        int parsedWounds = details.baseWounds ?? 0;
-
-        // If parsed wounds are > 0 but less than the expected 12, force it to 12.
-        if (parsedWounds < 12 && parsedWounds > 0) {
-          debugPrint(
-            'Wound Correction Applied: ${unit.unitName} baseWounds corrected to 12 (was $parsedWounds).',
-          );
-
-          // Use copyWith to create a new, corrected UnitDetails object
-          final correctedDetails = details.copyWith(baseWounds: 12);
-
-          // Then, use copyWith on the UnitEntry to replace the old UnitDetails
-          return unit.copyWith(unitDetails: correctedDetails);
-        }
-      }
-      // Return the unit unchanged if no correction is needed
-      return unit;
-    }).toList();
-
-    // Return a new ListPa with the corrected combat units list
-    return list.copyWith(combatUnits: correctedCombatUnits);
-  }
-
   // --- CORE LIST PARSING & LOADING ---
 
   Future<void> parseArmyList(String rawArmyListText) async {
@@ -250,13 +265,10 @@ class HomeViewModel extends ChangeNotifier {
         rawArmyListText,
       );
 
-      // 2. APPLY WOUND CORRECTION
-      final correctedResult = _applyWoundCorrection(result);
+      // 2. INITIALIZE TACTICAL STATE (removes the incorrect 12-wound fix)
+      _listPa = _initializeUnitTacticalState(result);
 
-      // 3. Set the corrected result to local state
-      _listPa = correctedResult;
-
-      // 4. Data is ready, trigger navigation
+      // 3. Data is ready, trigger navigation
       if (_listPa != null) {
         navigateToDetails.value = _listPa;
       }
@@ -271,7 +283,19 @@ class HomeViewModel extends ChangeNotifier {
     }
   }
 
-  // --- UI STATE MUTATORS (Purely local changes) ---
+  String getUnitFluffText(ArmyUnitData? unitData) {
+    if (unitData == null) {
+      return 'Unit details not found. No lore available.';
+    }
+
+    final fluff = unitData.fluffText?.trim();
+
+    if (fluff?.isNotEmpty == true) {
+      return fluff!;
+    }
+
+    return 'No lore or background available for this unit.';
+  }
 
   /// Generic update function that finds a unit by name/attachment and updates its tactical state.
   void _updateUnitState(
@@ -321,8 +345,14 @@ class HomeViewModel extends ChangeNotifier {
           maxCap,
         );
 
+    // --- WOUND CLAMPING FIX ---
+    // If we're updating wounds, ensure they don't exceed max wounds (which is unitDetails.baseWounds)
+    final maxWounds = unitToUpdate.unitDetails?.baseWounds ?? 12;
+    int wounds = currentWounds ?? unitToUpdate.currentWounds;
+    wounds = wounds.clamp(0, maxWounds);
+
     final updatedUnit = unitToUpdate.copyWith(
-      currentWounds: currentWounds ?? unitToUpdate.currentWounds,
+      currentWounds: wounds,
       isActivated: isActivated ?? unitToUpdate.isActivated,
       attackModifier: clampedAttack,
       defenseModifier: clampedDefense,
@@ -438,7 +468,14 @@ class HomeViewModel extends ChangeNotifier {
 
     List<UnitEntry> resetList(List<UnitEntry> units) {
       return units.map((unit) {
-        return unit.copyWith(isActivated: false);
+        return unit.copyWith(
+          isActivated: false,
+          currentWounds: 0,
+          attackModifier: 0,
+          defenseModifier: 0,
+          defenseDiceModifier: 0,
+          moraleModifier: 0,
+        );
       }).toList();
     }
 

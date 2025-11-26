@@ -20,6 +20,9 @@ void main() async {
   // --- 2. Collection Setup ---
   final nightswatchCollection = db.collection("NIGHT'S WATCH");
   final starkCollection = db.collection('STARK');
+  final martellCollection = db.collection('MARTELL');
+  final boltonCollection = db.collection('BOLTON');
+  final greyjoyCollection = db.collection('GREYJOY');
   final freeFolkCollection = db.collection('FREE FOLK');
   final lannisterCollection = db.collection('LANNISTER');
   final neutralCollection = db.collection('NEUTRAL');
@@ -33,6 +36,12 @@ void main() async {
   // --- 3. Faction Collection Helper ---
   DbCollection? getFactionCollection(String factionName) {
     switch (factionName.toLowerCase()) {
+      case 'martell':
+        return martellCollection;
+      case 'bolton':
+        return boltonCollection;
+      case 'greyjoy':
+        return greyjoyCollection;
       case 'stark':
         return starkCollection;
       case "night's watch":
@@ -47,6 +56,8 @@ void main() async {
         return baratheonCollection;
       case 'brotherhood w/o banners':
         return bwbCollection;
+      case 'neutral':
+        return neutralCollection;
       default:
         return null;
     }

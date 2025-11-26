@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'dart:math';
 import 'package:squire/data/model/Army_list/Army_unit_data.dart' as army_data;
 import 'package:squire/view_models/home_view_model.dart';
+import 'dart:math'; // Required for Random and max
 
 class UnitDetailsScreen extends StatefulWidget {
   final army_data.UnitEntry unit;
@@ -391,12 +391,11 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
     // Get the parsed wounds from the unit details, defaulting to 0 if null.
     int parsedWounds = unit.unitDetails?.baseWounds ?? 0;
 
-    // --- CRITICAL FIX FOR 3 WOUNDS ISSUE ---
-    if (isCombatUnit && parsedWounds < 12 && parsedWounds > 0) {
-      parsedWounds = 12;
-    }
+    // --- CRITICAL FIX REMOVED ---
+    // The previous logic incorrectly forced single-model unit wounds (like 4) up to 12.
+    // We now trust the 'baseWounds' value from the data source for the maximum wounds.
 
-    // Final max wounds: use the corrected parsed value, or 12 as an absolute default.
+    // Final max wounds: use the parsed value, or 12 as a fallback default.
     final maxWounds = parsedWounds > 0 ? parsedWounds : 12;
 
     final woundsTaken = unit.currentWounds;
@@ -523,6 +522,8 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
 
   String _getCurrentRankText(int maxWounds, int woundsTaken) {
     final woundsRemaining = maxWounds - woundsTaken;
+
+    // Use a simpler rank definition based on thirds of the max wounds.
     if (woundsRemaining > maxWounds * 2 / 3) {
       return 'Current Rank: 3 (Full Dice)';
     } else if (woundsRemaining > maxWounds * 1 / 3) {

@@ -73,6 +73,7 @@ paginate: true
 ### **Sprint 2**
 -Number of features planned: **4**
 -Number of requirements planned: **1**
+
 ---
 
 ## **Slide 9: What’s Next**

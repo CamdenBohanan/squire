@@ -27,6 +27,9 @@ class AttackProfile {
   }
 }
 
+// ----------------------------------------------------------------------
+// 1. ArmyUnitData: Unit details fetched from the backend/API
+// ----------------------------------------------------------------------
 class ArmyUnitData {
   // --- Core Identity Fields (From MongoDB) ---
   final String id;
@@ -50,6 +53,9 @@ class ArmyUnitData {
   // --- Ability/Rule Fields ---
   final Map<String, String> abilities;
 
+  // --- CRITICAL ADDITION for UI: Fluff/Lore Text ---
+  final String? fluffText;
+
   // --- Constructor ---
   ArmyUnitData({
     required this.id,
@@ -65,6 +71,7 @@ class ArmyUnitData {
     this.tray,
     required this.attacks, // Updated to List<AttackProfile>
     required this.abilities,
+    this.fluffText, // Added fluffText to constructor
   });
 
   // --- Factory Constructor: fromJson ---
@@ -140,6 +147,9 @@ class ArmyUnitData {
       attacks: parseAttacks(json['attacks']),
 
       abilities: parseAbilities(json['abilities']),
+
+      // CRITICAL: Safely extract fluff/lore text from the JSON
+      fluffText: safeString(json['fluff']) ?? safeString(json['lore']),
     );
   }
 
@@ -158,6 +168,7 @@ class ArmyUnitData {
     String? tray,
     List<AttackProfile>? attacks,
     Map<String, String>? abilities,
+    String? fluffText, // Added fluffText to copyWith
   }) {
     return ArmyUnitData(
       id: id ?? this.id,
@@ -173,6 +184,7 @@ class ArmyUnitData {
       tray: tray ?? this.tray,
       attacks: attacks ?? this.attacks,
       abilities: abilities ?? this.abilities,
+      fluffText: fluffText ?? this.fluffText, // Update
     );
   }
 }
