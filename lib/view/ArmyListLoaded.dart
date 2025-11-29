@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:squire/data/model/Army_list/Army_unit_data.dart';
-import 'package:squire/data/repositories/unit_repository.dart';
 import 'package:squire/view_models/home_view_model.dart';
-import 'package:squire/view/ArmyListLoaded.dart';
 import 'UnitDetailsScreen.dart';
 
 class ArmyListLoadedScreen extends StatelessWidget {
@@ -22,12 +20,15 @@ class ArmyListLoadedScreen extends StatelessWidget {
 
   // Helper function to format unit ID into asset paths (e.g., "30123" -> "assets/standees/30123.jpg")
   String _getImagePath(String? id, {String type = 'unit'}) {
+    // Define the base path for clarity and robustness
+    const String basePath = 'assets/standees/';
+
     if (id == null || id.isEmpty) {
-      // Return a generic placeholder if the ID is missing
-      return 'assets/standees/placeholder_$type.jpg';
+      // Return a generic placeholder if the ID is missing (works because of 'assets/' prefix)
+      return '${basePath}placeholder_$type.jpg';
     }
-    // Use the ID directly with the .jpg extension as specified
-    return 'assets/standees/$id.jpg';
+    // FIX: Prepend the full basePath to the ID path.
+    return '$basePath$id.jpg';
   }
 
   // Helper to build an image widget, handling potential errors

@@ -1,6 +1,9 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
+// --- Static Game Data Models ---
+
+/// Represents a single attack profile for a unit.
 class AttackProfile {
   final String name;
   final String type; // 'melee' or 'long' (range)
@@ -19,11 +22,45 @@ class AttackProfile {
       name: json['name'] ?? 'Unknown Attack',
       type: json['type'] ?? 'melee',
       hit: json['hit'] ?? 4,
-      // Ensure dice is parsed as a List<int>
       dice: (json['dice'] is List)
           ? List<int>.from(json['dice'].whereType<int>())
           : [],
     );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'type': type,
+    'hit': hit,
+    'dice': dice,
+  };
+}
+
+/// Represents a unit or NCU ability.
+class Ability {
+  final String name;
+  final List<String> effects; // The effect is a list of strings
+
+  Ability({required this.name, required this.effects});
+
+  // FIX: Check for 'effects' (plural) as well as 'effect' (singular) for resilience.
+  factory Ability.fromJson(Map<String, dynamic> json) {
+    final dynamic effectsValue =
+        json['effects'] ?? json['effect']; // Check both keys
+
+    return Ability(
+      name: json['name'] as String? ?? 'Unknown Ability',
+      effects: (effectsValue is List)
+          ? List<String>.from(effectsValue)
+          : [if (effectsValue != null) effectsValue.toString()],
+    );
+  }
+
+  Map<String, dynamic> toJson() => {'name': name, 'effect': effects};
+
+  // --- NEW: copyWith Method for easier updates ---
+  Ability copyWith({String? name, List<String>? effects}) {
+    return Ability(name: name ?? this.name, effects: effects ?? this.effects);
   }
 }
 
@@ -31,83 +68,49 @@ class AttackProfile {
 // 1. ArmyUnitData: Unit details fetched from the backend/API
 // ----------------------------------------------------------------------
 class ArmyUnitData {
-  // --- Core Identity Fields (From MongoDB) ---
+  // --- Core Identity Fields ---
   final String id;
-  final String? name;
+  final String name; // Made non-nullable as it's critical for the repository
   final String? title;
   final String? role;
-  final String? faction;
+  final String faction; // Made non-nullable, essential for API calls
   final int? points;
+  final List<Ability> abilities;
 
   // --- Combat Unit Specific Fields ---
-  final int? defense; // Now an int, e.g., 4
-  final int? morale; // Now an int, e.g., 7
-  final int?
-  baseWounds; // Maps to JSON 'wounds' field (e.g., 12 for Infantry/Cavalry)
+  final int? defense;
+  final int? morale;
+  final int? baseWounds; // This will now hold the total (e.g., 12)
   final int? speed;
-  final String? tray; // Maps to JSON 'tray'
+  final String? tray;
 
-  // --- Attack details (Now a list of profiles) ---
+  // --- Attack details ---
   final List<AttackProfile> attacks;
 
-  // --- Ability/Rule Fields ---
-  final Map<String, String> abilities;
-
-  // --- CRITICAL ADDITION for UI: Fluff/Lore Text ---
+  // --- Fluff/Lore Text ---
   final String? fluffText;
 
   // --- Constructor ---
   ArmyUnitData({
     required this.id,
-    this.name,
+    required this.name, // Required
+    required this.faction, // Required
     this.title,
     this.role,
-    this.faction,
     this.points,
     this.defense,
     this.morale,
     this.baseWounds,
     this.speed,
     this.tray,
-    required this.attacks, // Updated to List<AttackProfile>
-    required this.abilities,
-    this.fluffText, // Added fluffText to constructor
+    this.attacks = const [], // Defaulted to empty list
+    this.abilities = const [], // Defaulted to empty list
+    this.fluffText,
   });
 
   // --- Factory Constructor: fromJson ---
   factory ArmyUnitData.fromJson(Map<String, dynamic> json) {
-    Map<String, String> parseAbilities(dynamic jsonValue) {
-      if (jsonValue == null) return {};
-      if (jsonValue is List) {
-        final Map<String, String> result = {};
-        for (final item in jsonValue) {
-          if (item is Map<String, dynamic> &&
-              item.containsKey('name') &&
-              item.containsKey('description')) {
-            result[item['name'].toString()] = item['description'].toString();
-          }
-        }
-        return result;
-      }
-      if (jsonValue is Map) {
-        return jsonValue.map(
-          (key, value) => MapEntry(key.toString(), value.toString()),
-        );
-      }
-      return {};
-    }
-
-    // New attack parsing logic
-    List<AttackProfile> parseAttacks(dynamic jsonValue) {
-      if (jsonValue == null || jsonValue is! List) return [];
-      return (jsonValue as List)
-          .map((item) => AttackProfile.fromJson(item as Map<String, dynamic>))
-          .toList();
-    }
-
-    // *** CRITICAL FIX: Use the 'id' field as specified by the user ***
-    String extractedId = json['id']?.toString() ?? '0';
-
+    // Helper function to safely parse dynamic values to int
     int? safeInt(dynamic value) {
       if (value == null) return null;
       if (value is int) return value;
@@ -121,39 +124,131 @@ class ArmyUnitData {
       return str.isEmpty ? null : str;
     }
 
-    final tray = safeString(json['tray'])?.toLowerCase();
+    // --- Ability and Attack Parsing (Unchanged) ---
+    List<Ability> parseAbilities(dynamic jsonValue) {
+      if (jsonValue == null || jsonValue is! List) return [];
 
-    // LOGIC UPDATE: Default to 12 wounds if infantry OR cavalry (as requested)
-    final int? defaultWounds = (tray == 'infantry' || tray == 'cavalry')
-        ? 12
-        : null;
+      return (jsonValue as List)
+          .map((item) {
+            if (item is Map<String, dynamic>) {
+              return Ability.fromJson(item);
+            } else if (item is String) {
+              return Ability(name: item, effects: [item]);
+            }
+            return null;
+          })
+          .whereType<Ability>()
+          .toList();
+    }
+
+    List<AttackProfile> parseAttacks(dynamic jsonValue) {
+      if (jsonValue == null || jsonValue is! List) return [];
+      return (jsonValue as List)
+          .map((item) => AttackProfile.fromJson(item as Map<String, dynamic>))
+          .toList();
+    }
+    // --- End Parsing Helpers ---
+
+    // --- Core Data Extraction ---
+    String extractedId = json['id']?.toString() ?? '0';
+    String parsedName =
+        safeString(json['name']) ?? safeString(json['id']) ?? 'Unknown Unit';
+    String parsedFaction = safeString(json['faction']) ?? 'Neutral';
+    String? parsedTray = safeString(json['tray'])?.toLowerCase();
+    String? parsedRole = safeString(json['role'])?.toLowerCase();
+
+    String? parsedFluff = (json['fluff'] is Map)
+        ? safeString((json['fluff'] as Map<String, dynamic>)['lore'])
+        : safeString(json['fluff']);
+
+    // Get the raw 'wounds' value from the JSON. This is often wounds-per-rank (e.g., 3).
+    final int? rawWoundsPerRank =
+        safeInt(json['wounds']) ?? safeInt(json['baseWounds']);
+
+    // --- CRITICAL WOUNDS FIX LOGIC ---
+    int? calculateTotalWounds(int? rawWounds, String? tray) {
+      if (rawWounds == null || rawWounds <= 0) return null;
+
+      // ASOIAF TMG Rule: Combat units have wounds-per-rank, which must be multiplied by 4.
+      // We look for Infantry/Cavalry units with a low raw wound count (1, 2, or 3).
+      if (rawWounds <= 3 && (tray == 'infantry' || tray == 'cavalry')) {
+        if (kDebugMode)
+          print(
+            'Calculated combat unit wounds: $rawWounds * 4 = ${rawWounds * 4}',
+          );
+        return rawWounds * 4;
+      }
+
+      // For Solos, NCUs, Monsters (where the raw value is the total), use the raw value.
+      if (kDebugMode)
+        print('Using raw wounds value: $rawWounds for tray type: $tray');
+      return rawWounds;
+    }
+
+    final int? calculatedWounds = calculateTotalWounds(
+      rawWoundsPerRank,
+      parsedTray,
+    );
+
+    // --- FINAL RESILIENCE CHECK ---
+    int? finalBaseWounds = calculatedWounds;
+
+    // If the wounds calculation resulted in null/0, but the unit metadata suggests it's a combat unit,
+    // we force the default of 12. This catches JSON entries where 'wounds' or 'tray' might be missing.
+    final bool isCombatUnit =
+        (parsedTray == 'infantry' || parsedTray == 'cavalry') ||
+        (parsedRole == 'unit' && parsedTray != 'ncu');
+
+    if ((finalBaseWounds == null || finalBaseWounds == 0)) {
+      if (isCombatUnit) {
+        finalBaseWounds = 12;
+        if (kDebugMode)
+          print('FORCED baseWounds to 12 (Default Combat Unit Fallback).');
+      } else if (parsedTray == 'ncu' || parsedRole == 'ncu') {
+        finalBaseWounds = 1; // NCU fallback
+      }
+    }
+    // --- END FINAL RESILIENCE CHECK ---
 
     return ArmyUnitData(
       id: extractedId,
-      name: safeString(json['name']),
+      name: parsedName, // Safely parsed, now non-nullable
+      faction: parsedFaction, // Safely parsed, now non-nullable
       title: safeString(json['title']),
-      role: safeString(json['role']) ?? 'unit',
-      faction: safeString(json['faction']) ?? 'Neutral',
+      role: parsedRole ?? 'unit',
       points: safeInt(json['points']) ?? safeInt(json['cost']),
-      // Defense and Morale are now integers
       defense: safeInt(json['defense']),
       morale: safeInt(json['morale']),
       baseWounds:
-          safeInt(json['wounds']) ?? defaultWounds, // Applies default logic
+          finalBaseWounds, // <-- This should now reliably be 12 for Infantry
       speed: safeInt(json['speed']),
-      tray: safeString(json['tray']),
-
-      // Use new attack parser
+      tray: parsedTray,
       attacks: parseAttacks(json['attacks']),
-
       abilities: parseAbilities(json['abilities']),
-
-      // CRITICAL: Safely extract fluff/lore text from the JSON
-      fluffText: safeString(json['fluff']) ?? safeString(json['lore']),
+      fluffText: parsedFluff ?? safeString(json['lore']),
     );
   }
 
-  // --- NEW copyWith Method ---
+  // --- toJson Method ---
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'title': title,
+    'role': role,
+    'faction': faction,
+    'points': points,
+    'defense': defense,
+    'morale': morale,
+    // Use baseWounds (total) for saving/transfer, not raw wounds-per-rank
+    'baseWounds': baseWounds,
+    'speed': speed,
+    'tray': tray,
+    'attacks': attacks.map((a) => a.toJson()).toList(),
+    'abilities': abilities.map((a) => a.toJson()).toList(),
+    'fluffText': fluffText,
+  };
+
+  // --- copyWith Method ---
   ArmyUnitData copyWith({
     String? id,
     String? name,
@@ -167,8 +262,8 @@ class ArmyUnitData {
     int? speed,
     String? tray,
     List<AttackProfile>? attacks,
-    Map<String, String>? abilities,
-    String? fluffText, // Added fluffText to copyWith
+    List<Ability>? abilities,
+    String? fluffText,
   }) {
     return ArmyUnitData(
       id: id ?? this.id,
@@ -184,61 +279,53 @@ class ArmyUnitData {
       tray: tray ?? this.tray,
       attacks: attacks ?? this.attacks,
       abilities: abilities ?? this.abilities,
-      fluffText: fluffText ?? this.fluffText, // Update
+      fluffText: fluffText ?? this.fluffText,
     );
   }
 }
 
 // ----------------------------------------------------------------------
-// 2. UnitEntry (Tracker State)
+// 2. UnitEntry (Tracker State) - Kept unchanged
 // ----------------------------------------------------------------------
 class UnitEntry {
-  // Core Identifiers
+  // Core Identifiers (Made non-nullable, relying on Parser/Repository to fill)
   final String unitName;
   final String? attachmentName;
 
   // Cost/Points (Used by the Parser)
   final int unitCost;
-  final int? attachmentCost; // Cost of the attachment
+  final int attachmentCost;
 
   // Local Tactical State (Managed by ViewModel)
-  final int currentWounds; // Tracks current wounds taken
-  final bool isActivated; // Tracks activation status
-  final int
-  currentModifier; // Tracks general modifiers (DEPRECATED - now using specific below)
-
-  // NEW SPECIFIC MODIFIERS
-  final int
-  attackModifier; // Modifier applied to Hit roll target (e.g., -1 for cover, +1 for flank)
-  final int
-  defenseModifier; // Modifier applied to Save roll target (e.g., +1 for panic)
-  final int
-  moraleModifier; // Modifier applied to Morale roll target (e.g., -1 for terror)
-  final int
-  defenseDiceModifier; // NEW: Modifier applied to the number of defense dice rolled
+  final int currentWounds;
+  final bool isActivated;
+  final int attackModifier;
+  final int defenseModifier;
+  final int moraleModifier;
+  final int defenseDiceModifier;
 
   // Enriched Detail Data (Fetched by Repository)
   final ArmyUnitData? unitDetails;
   final ArmyUnitData? attachmentDetails;
 
-  // --- Primary Constructor ---
+  // --- Primary Constructor (Sets all necessary defaults) ---
   UnitEntry({
     required this.unitName,
     this.attachmentName,
     this.unitCost = 0,
-    this.attachmentCost,
+    this.attachmentCost = 0, // Defaulted to 0
     this.currentWounds = 0,
     this.isActivated = false,
-    this.currentModifier = 0,
     this.attackModifier = 0,
     this.defenseModifier = 0,
     this.moraleModifier = 0,
-    this.defenseDiceModifier = 0, // Initialize new field
+    this.defenseDiceModifier = 0,
     this.unitDetails,
     this.attachmentDetails,
   });
 
   // --- NAMED CONSTRUCTOR for Combat Units (used by the parser) ---
+  // Cleanly delegates to the primary constructor and relies on its defaults
   UnitEntry.combatUnit({
     required String unitName,
     required int unitCost,
@@ -248,27 +335,61 @@ class UnitEntry {
          unitName: unitName,
          unitCost: unitCost,
          attachmentName: attachmentName,
-         attachmentCost: attachmentCost,
-         currentWounds: 0,
-         isActivated: false,
-         attackModifier: 0,
-         defenseModifier: 0,
-         moraleModifier: 0,
-         defenseDiceModifier: 0,
+         attachmentCost: attachmentCost ?? 0,
        );
 
   // --- NAMED CONSTRUCTOR for NCUs (used by the parser) ---
+  // Cleanly delegates to the primary constructor and relies on its defaults
   UnitEntry.ncu({required String unitName, required int unitCost})
-    : this(
-        unitName: unitName,
-        unitCost: unitCost,
-        currentWounds: 0,
-        isActivated: false,
-        attackModifier: 0,
-        defenseModifier: 0,
-        moraleModifier: 0,
-        defenseDiceModifier: 0,
-      );
+    : this(unitName: unitName, unitCost: unitCost);
+
+  // --- Factory Constructor: fromJson ---
+  factory UnitEntry.fromJson(Map<String, dynamic> json) {
+    int safeInt(dynamic value) {
+      if (value == null) return 0;
+      if (value is int) return value;
+      if (value is String) return int.tryParse(value) ?? 0;
+      return 0;
+    }
+
+    ArmyUnitData? parseDetails(dynamic detailsJson) {
+      if (detailsJson != null && detailsJson is Map<String, dynamic>) {
+        return ArmyUnitData.fromJson(detailsJson);
+      }
+      return null;
+    }
+
+    return UnitEntry(
+      unitName: json['unitName'] as String? ?? 'Unknown Unit',
+      attachmentName: json['attachmentName'] as String?,
+      unitCost: safeInt(json['unitCost']),
+      attachmentCost: safeInt(json['attachmentCost']),
+      currentWounds: safeInt(json['currentWounds']),
+      isActivated: json['isActivated'] as bool? ?? false,
+      attackModifier: safeInt(json['attackModifier']),
+      defenseModifier: safeInt(json['defenseModifier']),
+      moraleModifier: safeInt(json['moraleModifier']),
+      defenseDiceModifier: safeInt(json['defenseDiceModifier']),
+      unitDetails: parseDetails(json['unitDetails']),
+      attachmentDetails: parseDetails(json['attachmentDetails']),
+    );
+  }
+
+  // --- toJson Method ---
+  Map<String, dynamic> toJson() => {
+    'unitName': unitName,
+    'attachmentName': attachmentName,
+    'unitCost': unitCost,
+    'attachmentCost': attachmentCost,
+    'currentWounds': currentWounds,
+    'isActivated': isActivated,
+    'attackModifier': attackModifier,
+    'defenseModifier': defenseModifier,
+    'moraleModifier': moraleModifier,
+    'defenseDiceModifier': defenseDiceModifier,
+    'unitDetails': unitDetails?.toJson(),
+    'attachmentDetails': attachmentDetails?.toJson(),
+  };
 
   // --- copyWith Method ---
   UnitEntry copyWith({
@@ -278,11 +399,10 @@ class UnitEntry {
     int? attachmentCost,
     int? currentWounds,
     bool? isActivated,
-    int? currentModifier,
     int? attackModifier,
     int? defenseModifier,
     int? moraleModifier,
-    int? defenseDiceModifier, // Added new field
+    int? defenseDiceModifier,
     ArmyUnitData? unitDetails,
     ArmyUnitData? attachmentDetails,
   }) {
@@ -293,12 +413,10 @@ class UnitEntry {
       attachmentCost: attachmentCost ?? this.attachmentCost,
       currentWounds: currentWounds ?? this.currentWounds,
       isActivated: isActivated ?? this.isActivated,
-      currentModifier: currentModifier ?? this.currentModifier,
       attackModifier: attackModifier ?? this.attackModifier,
       defenseModifier: defenseModifier ?? this.defenseModifier,
       moraleModifier: moraleModifier ?? this.moraleModifier,
-      defenseDiceModifier:
-          defenseDiceModifier ?? this.defenseDiceModifier, // Update
+      defenseDiceModifier: defenseDiceModifier ?? this.defenseDiceModifier,
       unitDetails: unitDetails ?? this.unitDetails,
       attachmentDetails: attachmentDetails ?? this.attachmentDetails,
     );
@@ -330,7 +448,19 @@ class ListPa {
     this.totalActivations = 0,
   });
 
-  // The copyWith method MUST include all fields.
+  // --- toJson Method ---
+  Map<String, dynamic> toJson() => {
+    'listId': listId,
+    'faction': faction,
+    'commanderName': commanderName,
+    'commanderDetails': commanderDetails?.toJson(),
+    'totalPoints': totalPoints,
+    'totalActivations': totalActivations,
+    'combatUnits': combatUnits.map((u) => u.toJson()).toList(),
+    'ncus': ncus.map((u) => u.toJson()).toList(),
+  };
+
+  // --- copyWith Method ---
   ListPa copyWith({
     String? listId,
     String? faction,

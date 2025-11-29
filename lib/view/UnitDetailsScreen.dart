@@ -26,6 +26,10 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
   // State to track which attack profile is selected (e.g., 'melee' or 'long')
   String _selectedAttackType = 'melee';
 
+  // State to track which specific Order abilities are currently active.
+  // This is locally managed and must be reset on unit deactivation.
+  final Set<String> _activeOrders = {};
+
   @override
   void initState() {
     super.initState();
@@ -37,104 +41,80 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
     }
   }
 
-  // --- MOCK IMAGE HELPERS (Copied from ArmyListLoadedScreen for consistency) ---
-
-  // Helper to construct the full asset path
-  String _getImagePath(String? id, {required String type}) {
-    if (id == null || id.isEmpty) {
-      // Return a generic placeholder if the ID is missing
-      return 'assets/standees/placeholder_$type.jpg';
-    }
-    // Use the ID directly with the .jpg extension as specified
-    return 'assets/standees/$id.jpg';
-  }
-
-  // Helper to build an image widget, handling potential errors
+  // --- REVISED AND ROBUST IMAGE HELPER ---
   Widget _buildUnitImage(
-    String imagePath, {
+    String viewModelPath, {
     required double size,
     required bool isMain,
   }) {
+    // Fallback widget function for consistency
+    Widget fallbackWidget(String path) {
+      // Use the last part of the path as a readable ID for the placeholder text
+      final displayId = path.split('/').last.split('.').first.isNotEmpty
+          ? path.split('/').last.split('.').first
+          : 'Unit';
+
+      return Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: Colors.grey.shade800, // Dark background for placeholder
+          borderRadius: BorderRadius.circular(isMain ? 12.0 : 8.0),
+          border: Border.all(color: Colors.grey.shade600),
+        ),
+        child: Center(
+          child: Text(
+            '$displayId\nNo Image',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.grey.shade400,
+              fontSize: size * 0.1,
+              fontFamily: 'Garamond',
+            ),
+          ),
+        ),
+      );
+    }
+
+    // 1. CRITICAL GUARD: Check if the ViewModel returned a known error placeholder string
+    // or an empty path. If so, immediately show the fallback.
+    final bool isPlaceholderError =
+        viewModelPath.contains('[CLICK USE]') || viewModelPath.isEmpty;
+
+    if (isPlaceholderError) {
+      return fallbackWidget(viewModelPath);
+    }
+
+    // 2. PATH FIX: Assume the viewModelPath is the complete asset path (e.g., 'assets/...')
+    // Removed the redundant 'assets/' prefix to prevent the double path error.
+    final fullAssetPath = viewModelPath;
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(isMain ? 12.0 : 8.0),
       child: Image.asset(
-        imagePath,
+        fullAssetPath,
         width: size,
         height: size,
         fit: BoxFit.cover,
+        // The errorBuilder handles genuine file-not-found issues that pass the initial guard
         errorBuilder: (context, error, stackTrace) {
-          // Fallback widget if the image asset is not found (Dark Theme)
-          return Container(
-            width: size,
-            height: size,
-            decoration: BoxDecoration(
-              color: Colors.grey.shade800, // Dark background for placeholder
-              borderRadius: BorderRadius.circular(isMain ? 12.0 : 8.0),
-              border: Border.all(color: Colors.grey.shade600),
-            ),
-            child: Center(
-              child: Text(
-                '${imagePath.split('/').last.split('.').first}\nNo Image',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.grey.shade400,
-                  fontSize: size * 0.1,
-                  fontFamily: 'Garamond',
-                ),
-              ),
-            ),
-          );
+          return fallbackWidget(fullAssetPath);
         },
       ),
     );
   }
 
-  // --- END MOCK IMAGE HELPERS ---
+  // --- END REVISED IMAGE HELPER ---
 
   @override
   Widget build(BuildContext context) {
     final viewModel = Provider.of<HomeViewModel>(context);
 
-    // Get the current state of the unit from the ViewModel
-    army_data.UnitEntry currentUnitState = widget.unit;
-
-    // Safely look up the unit in the ViewModel's state to get the latest wounds/modifiers
-    army_data.UnitEntry? match;
-
-    // 1. Search Combat Units safely
-    final cuList = viewModel.listPa?.combatUnits ?? [];
-    final cuMatches = cuList
-        .where(
-          (u) =>
-              u.unitName == widget.unit.unitName &&
-              u.attachmentName == widget.unit.attachmentName,
-        )
-        .toList();
-
-    if (cuMatches.isNotEmpty) {
-      match = cuMatches.first;
-    }
-
-    // 2. Search NCUs safely if no combat unit match found
-    if (match == null) {
-      final ncuList = viewModel.listPa?.ncus ?? [];
-      final ncuMatches = ncuList
-          .where(
-            (u) =>
-                u.unitName == widget.unit.unitName &&
-                u.attachmentName == widget.unit.attachmentName,
-          )
-          .toList();
-
-      if (ncuMatches.isNotEmpty) {
-        match = ncuMatches.first;
-      }
-    }
-
-    // 3. Update the state reference if a match was found
-    if (match != null) {
-      currentUnitState = match;
-    }
+    // CRITICAL FIX: Use the ViewModel helper to get the latest state reactively.
+    // This simplifies the build method and ensures wound/activation data is current.
+    final army_data.UnitEntry currentUnitState = viewModel.getUnitState(
+      widget.unit,
+    );
 
     // Check if the unit is a Combat Unit (has defense value)
     final isCombatUnit = currentUnitState.unitDetails?.defense != null;
@@ -160,11 +140,11 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // --- UNIT AND ATTACHMENT PORTRAITS ---
-            _buildPortraitsRow(currentUnitState),
+            _buildPortraitsRow(currentUnitState, viewModel), // Pass viewModel
 
             const SizedBox(height: 20),
 
-            // --- UNIT IDENTIFICATION ---
+            // --- UNIT IDENTIFICATION & ACTIVATION ---
             Card(
               color: _cardBackground, // Apply dark card color
               elevation: 8,
@@ -213,9 +193,14 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
 
             const SizedBox(height: 20),
 
-            // --- ROLL SECTION ---
+            // --- ROLL SECTION (Combat Units Only) ---
             if (isCombatUnit)
               _buildRollsSection(context, currentUnitState, viewModel),
+
+            // --- UNIT ABILITIES AND RULES ---
+            _buildAbilitiesSection(context, currentUnitState, viewModel),
+
+            const SizedBox(height: 20),
           ],
         ),
       ),
@@ -224,7 +209,7 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
 
   // --- Portrait Builder Section ---
 
-  Widget _buildPortraitsRow(army_data.UnitEntry unit) {
+  Widget _buildPortraitsRow(army_data.UnitEntry unit, HomeViewModel viewModel) {
     final unitData = unit.unitDetails;
     final attachmentData = unit.attachmentDetails;
     const double mainImageSize = 120.0;
@@ -236,6 +221,7 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
       children: [
         // 1. Main Unit Portrait (Always present)
         _buildUnitPortrait(
+          viewModel, // Pass viewModel
           unitData?.role == 'ncu' ? 'NCU' : 'Unit', // Label logic
           unitData,
           mainImageSize,
@@ -246,6 +232,7 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
         if (attachmentData != null) ...[
           const SizedBox(width: 20),
           _buildUnitPortrait(
+            viewModel, // Pass viewModel
             'Attachment',
             attachmentData,
             secondaryImageSize,
@@ -257,14 +244,20 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
   }
 
   Widget _buildUnitPortrait(
+    HomeViewModel viewModel, // Added viewModel
     String label,
     army_data.ArmyUnitData? data,
     double size, {
     required bool isMain,
   }) {
-    final id = data?.id;
     final name = data?.name ?? 'Unknown';
     final title = data?.title;
+
+    // Use the ViewModel's helper to get the image path
+    final imagePath = viewModel.getUnitImagePath(
+      data,
+      type: data?.role ?? 'unit',
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.center,
@@ -280,7 +273,7 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
         ),
         const SizedBox(height: 8),
         _buildUnitImage(
-          _getImagePath(id, type: data?.role ?? 'unit'),
+          imagePath, // Use the path returned by the ViewModel
           size: size,
           isMain: isMain,
         ),
@@ -350,10 +343,19 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
                 ),
               ),
               ElevatedButton.icon(
-                onPressed: () => viewModel.toggleActivation(
-                  unit.unitName,
-                  attachmentName: unit.attachmentName,
-                ),
+                onPressed: () {
+                  // If the unit is currently activated, clicking this button means we are
+                  // resetting it. We must clear the local temporary active orders state.
+                  if (unit.isActivated) {
+                    setState(() {
+                      _activeOrders.clear();
+                    });
+                  }
+                  viewModel.toggleActivation(
+                    unit.unitName,
+                    attachmentName: unit.attachmentName,
+                  );
+                },
                 icon: Icon(
                   unit.isActivated ? Icons.undo : Icons.check_circle_outline,
                 ),
@@ -385,18 +387,26 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
     army_data.UnitEntry unit,
     HomeViewModel viewModel,
   ) {
-    // Check if the unit is a Combat Unit (has defense value)
-    final isCombatUnit = unit.unitDetails?.defense != null;
-
     // Get the parsed wounds from the unit details, defaulting to 0 if null.
-    int parsedWounds = unit.unitDetails?.baseWounds ?? 0;
+    int baseWounds = unit.unitDetails?.baseWounds ?? 0;
+    int totalMaxWounds = 0;
 
-    // --- CRITICAL FIX REMOVED ---
-    // The previous logic incorrectly forced single-model unit wounds (like 4) up to 12.
-    // We now trust the 'baseWounds' value from the data source for the maximum wounds.
+    // --- START WOUND CALCULATION FIX ---
+    if (baseWounds > 0 && baseWounds <= 3) {
+      // If baseWounds is a low value (1-3), we assume it's "wounds per rank"
+      // for a standard 4-rank combat unit (Cavalry, Infantry).
+      totalMaxWounds = baseWounds * 4; // e.g., 3 * 4 = 12
+    } else if (baseWounds > 0) {
+      // Use the baseWounds directly for Solos/Monsters (e.g., 4 or 6 wounds),
+      // or if the data already contains the total (e.g., 12 or 20).
+      totalMaxWounds = baseWounds;
+    } else {
+      // Fallback default for combat units with missing data.
+      totalMaxWounds = 12;
+    }
 
-    // Final max wounds: use the parsed value, or 12 as a fallback default.
-    final maxWounds = parsedWounds > 0 ? parsedWounds : 12;
+    final maxWounds = totalMaxWounds;
+    // --- END WOUND CALCULATION FIX ---
 
     final woundsTaken = unit.currentWounds;
     final woundsRemaining = maxWounds - woundsTaken;
@@ -489,13 +499,15 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
             if (isDestroyed)
               Padding(
                 padding: const EdgeInsets.only(top: 10),
-                child: Text(
-                  'Unit Destroyed/Broken!',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.redAccent,
-                    fontWeight: FontWeight.bold,
-                    fontFamily: 'Tuff',
+                child: Center(
+                  child: Text(
+                    'Unit Destroyed/Broken!',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.redAccent,
+                      fontWeight: FontWeight.bold,
+                      fontFamily: 'Tuff',
+                    ),
                   ),
                 ),
               ),
@@ -636,11 +648,13 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
         .toList();
     final hasMultipleAttackTypes = availableAttackTypes.length > 1;
 
-    final attackDice = viewModel.getAttackDiceForUnit(
-      unit,
-      _selectedAttackType,
-    );
-    final toHitTarget = viewModel.getToHitTarget(unit, _selectedAttackType);
+    // Default dice/target to safe values if unitDetails is null
+    final attackDice = unit.unitDetails != null
+        ? viewModel.getAttackDiceForUnit(unit, _selectedAttackType)
+        : 0;
+    final toHitTarget = unit.unitDetails != null
+        ? viewModel.getToHitTarget(unit, _selectedAttackType)
+        : 4;
 
     final selectedAttackName = attackProfiles
         .firstWhere(
@@ -654,9 +668,15 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
         )
         .name;
 
-    final defenseSaveTarget = viewModel.getDefenseSaveTarget(unit);
-    final defenseDice = viewModel.getDefenseDiceCount(unit);
-    final moraleTarget = viewModel.getMoraleTarget(unit);
+    final defenseSaveTarget = unit.unitDetails != null
+        ? viewModel.getDefenseSaveTarget(unit)
+        : 3;
+    final defenseDice = unit.unitDetails != null
+        ? viewModel.getDefenseDiceCount(unit)
+        : 0;
+    final moraleTarget = unit.unitDetails != null
+        ? viewModel.getMoraleTarget(unit)
+        : 7;
 
     return Card(
       color: _cardBackground, // Apply dark card color
@@ -780,6 +800,147 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
     );
   }
 
+  // --- ABILITIES SECTION FOR NCUs AND COMBAT UNITS (MODIFIED) ---
+  Widget _buildAbilitiesSection(
+    BuildContext context,
+    army_data.UnitEntry unit,
+    HomeViewModel viewModel,
+  ) {
+    final abilities = viewModel.getUnitAbilities(unit);
+
+    if (abilities.isEmpty) {
+      return const SizedBox.shrink(); // Hide if no abilities are loaded yet
+    }
+
+    return Column(
+      children: [
+        const SizedBox(height: 20),
+        Card(
+          color: _cardBackground,
+          elevation: 8,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(15),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(20.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Abilities & Rules',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    color: _primaryText,
+                    fontFamily: 'Tuff',
+                  ),
+                ),
+                Divider(height: 20, color: Colors.white12),
+                ...abilities.map((abilityString) {
+                  // CRITICAL FIX: Parse the ViewModel's clean output: "**Name**:\nEffect Text"
+                  final parts = abilityString.split(
+                    ':\n',
+                  ); // Split by the clean delimiter
+                  final nameWithStars =
+                      parts.first; // e.g., "**Order: Set for Charge**"
+                  final fullAbilityName = nameWithStars
+                      .replaceAll('**', '')
+                      .trim();
+                  final effect = parts.length > 1
+                      ? parts
+                            .sublist(1)
+                            .join(':\n')
+                            .trim() // Use join(':\n') to handle colons in text
+                      : 'Rule text unavailable.';
+
+                  final isOrder = fullAbilityName.startsWith('Order:');
+
+                  // NEW: Check state via ViewModel
+                  // This calculation is retained for visual status display
+                  final isUsed = isOrder
+                      ? viewModel.isAbilityUsed(unit, fullAbilityName)
+                      : false;
+
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12.0),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // 1. Text Content
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                // Display name without the trailing colon, as the effect is separate
+                                fullAbilityName,
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color:
+                                      isUsed // Highlight color based on VM state
+                                      ? Colors.yellow.shade400
+                                      : _accentColor,
+                                  fontFamily: 'Garamond',
+                                ),
+                              ),
+                              Text(
+                                effect,
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  color: _secondaryText,
+                                  fontFamily: 'Garamond',
+                                  height: 1.4,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        // 2. Order Toggle Button (Now non-functional)
+                        if (isOrder)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 10.0),
+                            child: ElevatedButton(
+                              onPressed: null, // Functionality removed
+                              style: ElevatedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 8,
+                                ),
+                                minimumSize:
+                                    Size.zero, // Make button size fit content
+                                backgroundColor:
+                                    isUsed // Color based on VM state
+                                    ? Colors.green.shade700
+                                    : Colors.red.shade700,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                              ),
+                              child: Text(
+                                isUsed ? '' : '', // Label based on VM state
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                  fontFamily: 'Tuff',
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   // --- UPDATED Attack Type Selector (Themed) ---
   Widget _buildAttackTypeSelector(
     BuildContext context,
@@ -867,7 +1028,7 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
     );
   }
 
-  // --- Themed Attack Roll Dialog ---
+  // --- Themed Attack Roll Dialog (Untruncated) ---
   void _showAttackRollResult(
     BuildContext context,
     String rollType,
@@ -899,53 +1060,61 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
         return AlertDialog(
           backgroundColor: _cardBackground,
           title: Text(
-            '$rollType Roll (Hit $toHit+)',
-            style: TextStyle(color: _primaryText, fontFamily: 'Tuff'),
+            '$rollType Roll Result',
+            style: TextStyle(
+              color: _primaryText,
+              fontWeight: FontWeight.bold,
+              fontFamily: 'Tuff',
+            ),
           ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Rolled $numberOfDice D6:',
+                'Dice rolled: $numberOfDice (Hit on $toHit+)',
                 style: TextStyle(color: _secondaryText, fontFamily: 'Garamond'),
               ),
               const SizedBox(height: 10),
-              Wrap(
-                spacing: 8.0,
-                children: rolls
-                    .map(
-                      (roll) => Chip(
-                        label: Text(
-                          roll.toString(),
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color:
-                                Colors.black, // Chip text is black for contrast
-                          ),
-                        ),
-                        backgroundColor: roll >= toHit
-                            ? Colors.green.shade400
-                            : Colors.red.shade400,
-                      ),
-                    )
-                    .toList(),
-              ),
-              const SizedBox(height: 15),
               Text(
                 'Total Hits: $hits',
                 style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: _accentColor,
+                  color: hits > 0 ? Colors.green.shade400 : Colors.red.shade400,
+                  fontSize: 24,
+                  fontWeight: FontWeight.w900,
                   fontFamily: 'Tuff',
                 ),
               ),
+              const SizedBox(height: 15),
+              Text(
+                'Individual Rolls:',
+                style: TextStyle(color: _accentColor, fontFamily: 'Garamond'),
+              ),
+              Wrap(
+                spacing: 8.0,
+                runSpacing: 4.0,
+                children: rolls.map((roll) {
+                  final isSuccess = roll >= toHit;
+                  return Chip(
+                    label: Text(
+                      roll.toString(),
+                      style: const TextStyle(
+                        color: Colors.black,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    backgroundColor: isSuccess
+                        ? Colors.green.shade300
+                        : Colors.grey.shade400,
+                  );
+                }).toList(),
+              ),
             ],
           ),
-          actions: <Widget>[
+          actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: Text('OK', style: TextStyle(color: _accentColor)),
+              child: Text('Close', style: TextStyle(color: _accentColor)),
             ),
           ],
         );
@@ -953,18 +1122,18 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
     );
   }
 
-  // --- Themed Generic Roll Dialog (Defense Save) ---
+  // --- Themed Roll Dialog (Generic - Untruncated) ---
   void _showRollResult(
     BuildContext context,
     String rollType,
     int numberOfDice,
-    int targetValue,
+    int target,
   ) {
     if (numberOfDice <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            "Cannot roll: Dice count is zero.",
+            "Cannot roll: Unit is destroyed or has 0 defense dice.",
             style: TextStyle(color: Colors.black, fontFamily: 'Garamond'),
           ),
           backgroundColor: _accentColor,
@@ -977,7 +1146,7 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
       numberOfDice,
       (_) => 1 + Random().nextInt(6),
     );
-    final successes = rolls.where((r) => r >= targetValue).length;
+    final successes = rolls.where((r) => r >= target).length;
 
     showDialog(
       context: context,
@@ -985,52 +1154,63 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
         return AlertDialog(
           backgroundColor: _cardBackground,
           title: Text(
-            '$rollType Roll (Target $targetValue+)',
-            style: TextStyle(color: _primaryText, fontFamily: 'Tuff'),
+            '$rollType Result',
+            style: TextStyle(
+              color: _primaryText,
+              fontWeight: FontWeight.bold,
+              fontFamily: 'Tuff',
+            ),
           ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Rolled $numberOfDice D6:',
+                'Dice rolled: $numberOfDice (Success on $target+)',
                 style: TextStyle(color: _secondaryText, fontFamily: 'Garamond'),
               ),
               const SizedBox(height: 10),
-              Wrap(
-                spacing: 8.0,
-                children: rolls
-                    .map(
-                      (roll) => Chip(
-                        label: Text(
-                          roll.toString(),
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black,
-                          ),
-                        ),
-                        backgroundColor: roll >= targetValue
-                            ? _accentColor
-                            : Colors.red.shade400,
-                      ),
-                    )
-                    .toList(),
-              ),
-              const SizedBox(height: 15),
               Text(
                 'Total Successes: $successes',
                 style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: _accentColor,
+                  color: successes > 0
+                      ? Colors.blue.shade400
+                      : Colors.red.shade400,
+                  fontSize: 24,
+                  fontWeight: FontWeight.w900,
                   fontFamily: 'Tuff',
                 ),
               ),
+              const SizedBox(height: 15),
+              Text(
+                'Individual Rolls:',
+                style: TextStyle(color: _accentColor, fontFamily: 'Garamond'),
+              ),
+              Wrap(
+                spacing: 8.0,
+                runSpacing: 4.0,
+                children: rolls.map((roll) {
+                  final isSuccess = roll >= target;
+                  return Chip(
+                    label: Text(
+                      roll.toString(),
+                      style: const TextStyle(
+                        color: Colors.black,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    backgroundColor: isSuccess
+                        ? Colors.blue.shade300
+                        : Colors.grey.shade400,
+                  );
+                }).toList(),
+              ),
             ],
           ),
-          actions: <Widget>[
+          actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: Text('OK', style: TextStyle(color: _accentColor)),
+              child: Text('Close', style: TextStyle(color: _accentColor)),
             ),
           ],
         );
@@ -1038,50 +1218,22 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
     );
   }
 
-  // --- Themed Morale Roll Specific Logic ---
+  // --- Themed Morale Roll Dialog (Untruncated & Clarified) ---
   void _showMoraleRollResult(
     BuildContext context,
-    int moraleTarget, // This is the *adjusted* target
+    int target,
     army_data.UnitEntry unit,
     HomeViewModel viewModel,
   ) {
-    // Morale roll is 2D6
     final roll1 = 1 + Random().nextInt(6);
     final roll2 = 1 + Random().nextInt(6);
-    final rollTotal = roll1 + roll2;
+    final modifier = unit.moraleModifier;
+    final total = roll1 + roll2 + modifier;
 
-    int damageTaken = 0;
-    String resultMessage = '';
-    Color resultColor;
-    String resultTitle;
-
-    if (rollTotal >= moraleTarget) {
-      // Success
-      resultTitle = 'Morale Check PASSED';
-      resultColor = Colors.green.shade400;
-      resultMessage = 'PASSED ($rollTotal vs $moraleTarget+). No damage taken.';
-    } else {
-      // Failure - Damage taken is Morale Target minus the roll total
-      damageTaken = moraleTarget - rollTotal;
-      damageTaken = max(0, damageTaken); // Prevent taking negative damage
-
-      // Update the wounds in the ViewModel
-      final newWounds = unit.currentWounds + damageTaken;
-      viewModel.updateWounds(
-        unit.unitName,
-        attachmentName: unit.attachmentName,
-        newWounds: newWounds,
-      );
-
-      resultTitle = 'Morale Check FAILED';
-      resultColor = Colors.red.shade400;
-      if (damageTaken > 0) {
-        resultMessage =
-            'FAILED ($rollTotal vs $moraleTarget+)! Unit takes $damageTaken wounds.';
-      } else {
-        resultMessage = 'FAILED, but no wounds were calculated to be taken.';
-      }
-    }
+    // Pass if the total is EQUAL to or HIGHER than the Morale Target (MV)
+    final success = total >= target;
+    final resultText = success ? 'Passed' : 'Failed (Routed/Panicked)';
+    final resultColor = success ? Colors.green.shade600 : Colors.red.shade600;
 
     showDialog(
       context: context,
@@ -1089,72 +1241,56 @@ class _UnitDetailsScreenState extends State<UnitDetailsScreen> {
         return AlertDialog(
           backgroundColor: _cardBackground,
           title: Text(
-            resultTitle,
-            style: TextStyle(color: resultColor, fontFamily: 'Tuff'),
+            'Morale Check',
+            style: TextStyle(
+              color: _primaryText,
+              fontWeight: FontWeight.bold,
+              fontFamily: 'Tuff',
+            ),
           ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                resultMessage,
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: resultColor,
-                  fontFamily: 'Garamond',
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 15),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Chip(
-                    label: Text(
-                      roll1.toString(),
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black,
-                      ),
-                    ),
-                    backgroundColor: Colors.white,
-                  ),
-                  const SizedBox(width: 8),
-                  Chip(
-                    label: Text(
-                      roll2.toString(),
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black,
-                      ),
-                    ),
-                    backgroundColor: Colors.white,
-                  ),
-                ],
+                'Morale Value (MV): $target+',
+                style: TextStyle(color: _secondaryText, fontFamily: 'Garamond'),
               ),
               const SizedBox(height: 10),
               Text(
-                'Total Roll: $rollTotal (Target: $moraleTarget+)',
-                style: TextStyle(fontSize: 16, color: _primaryText),
+                'Rolls: $roll1 + $roll2',
+                style: TextStyle(color: _secondaryText, fontFamily: 'Garamond'),
               ),
-              if (damageTaken > 0)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8.0),
-                  child: Text(
-                    '(Wounds automatically applied to unit state)',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.redAccent,
-                      fontFamily: 'Garamond',
-                    ),
-                  ),
+              Text(
+                'Modifier: ${modifier > 0 ? '+' : ''}$modifier',
+                style: TextStyle(color: _secondaryText, fontFamily: 'Garamond'),
+              ),
+              const Divider(),
+              Text(
+                'Total Roll: $total (Needed $target+ to Pass)',
+                style: TextStyle(
+                  color: _primaryText,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
+                  fontFamily: 'Tuff',
                 ),
+              ),
+              const SizedBox(height: 5),
+              Text(
+                'Check Result: $resultText',
+                style: TextStyle(
+                  color: resultColor,
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  fontFamily: 'Tuff',
+                ),
+              ),
             ],
           ),
-          actions: <Widget>[
+          actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: Text('OK', style: TextStyle(color: _accentColor)),
+              child: Text('Close', style: TextStyle(color: _accentColor)),
             ),
           ],
         );

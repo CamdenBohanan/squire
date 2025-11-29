@@ -15,7 +15,4 @@ class UnitPortraitViewModel extends ChangeNotifier {
     // We assume all images are .png for consistency
     return '$_serverBaseUrl/portraits/$unitId.png';
   }
-
-  // You might also expose the full list of URL strings, but exposing the unit data is often better.
-  // ... other methods to fetch data ...
 }

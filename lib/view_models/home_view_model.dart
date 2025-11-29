@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:squire/data/repositories/unit_repository.dart';
-import 'package:squire/data/model/Army_list/Army_unit_data.dart'; // Use the singular, correct model file
+import 'package:squire/data/repositories/Ability_Repository.dart';
+import 'package:squire/data/model/Army_list/Army_unit_data.dart';
 import 'package:flutter/foundation.dart';
 
 class HomeViewModel extends ChangeNotifier {
   final UnitRepository _repository;
+  final AbilityRepository _abilityRepository;
 
   ListPa? _listPa;
   ListPa? get listPa => _listPa;
@@ -18,10 +20,21 @@ class HomeViewModel extends ChangeNotifier {
 
   final ValueNotifier<ListPa?> navigateToDetails = ValueNotifier(null);
 
-  HomeViewModel({required UnitRepository repository})
-    : _repository = repository;
+  // New state for tracking specific ability usage (e.g., "Order:" abilities)
+  // Key: Unique Unit Identifier, Value: Map<Ability Name, bool isUsed>
+  final Map<String, Map<String, bool>> _abilityActivationState = {};
 
-  // --- Helper Methods ---
+  // Helper to generate a unique key for unit state tracking
+  String _unitIdentifier(UnitEntry unit) =>
+      '${unit.unitName}|${unit.attachmentName ?? ''}';
+
+  HomeViewModel({
+    required UnitRepository repository,
+    required AbilityRepository abilityRepository,
+  }) : _repository = repository,
+       _abilityRepository = abilityRepository;
+
+  // --- Core State Management ---
 
   void _setLoading(bool value) {
     _isLoading = value;
@@ -39,7 +52,6 @@ class HomeViewModel extends ChangeNotifier {
   }
 
   void loadArmyList(ListPa newList) {
-    // If loading from a pre-parsed source, ensure tactical state is initialized
     _listPa = _initializeUnitTacticalState(newList);
     notifyListeners();
   }
@@ -70,6 +82,122 @@ class HomeViewModel extends ChangeNotifier {
     return null;
   }
 
+  // --- ABILITY ACTIVATION TRACKING ---
+
+  /// Checks if a specific ability on a unit has been activated this round.
+  bool isAbilityUsed(UnitEntry unit, String abilityName) {
+    final unitId = _unitIdentifier(unit);
+    return _abilityActivationState[unitId]?[abilityName] ?? false;
+  }
+
+  /// Toggles the activation status of a specific ability on a unit.
+  void toggleAbilityUsed(UnitEntry unit, String abilityName) {
+    final unitId = _unitIdentifier(unit);
+
+    // Initialize the unit's ability map if it doesn't exist
+    _abilityActivationState.putIfAbsent(unitId, () => <String, bool>{});
+
+    // Toggle the state
+    final currentState = _abilityActivationState[unitId]![abilityName] ?? false;
+    _abilityActivationState[unitId]![abilityName] = !currentState;
+
+    if (kDebugMode) {
+      print(
+        'Toggled ability: "$abilityName" on unit ${unit.unitName} to ${!currentState}',
+      );
+    }
+
+    notifyListeners();
+  }
+
+  // --- KEYWORD CHECKER (For Critical Blow, Precision, etc.) ---
+
+  /// Checks if a unit (or its attachment) has a specific keyword/ability.
+  bool hasKeyword(UnitEntry unit, String keyword) {
+    bool checkData(ArmyUnitData? data) {
+      if (data == null) return false;
+      return data.abilities.any(
+        (ability) => ability.name.toLowerCase().contains(keyword.toLowerCase()),
+      );
+    }
+
+    return checkData(unit.unitDetails) || checkData(unit.attachmentDetails);
+  }
+
+  // --- ABILITY ENRICHMENT LOGIC (Delegated to Repository) ---
+
+  Future<void> _enrichAbilitiesInList(ListPa list) async {
+    // Helper function to enrich ArmyUnitData
+    ArmyUnitData? _enrichData(ArmyUnitData? data) {
+      if (data == null) return null;
+
+      final List<Ability> enrichedAbilities = data.abilities.map((ability) {
+        final String rawAbilityName = ability.name;
+
+        // CRITICAL FIX: Delegate the lookup and normalization to the AbilityRepository.
+        final String ruleText = _abilityRepository.getAbilityRule(
+          rawAbilityName,
+        );
+
+        // Check if the rule was successfully found (i.e., not the error message)
+        if (!ruleText.contains('Rule text unavailable')) {
+          // The repository returns a single string with newlines (\n) for formatting.
+          // Split it to match the model's List<String> effects property.
+          final List<String> ruleEffects = ruleText.split('\n');
+
+          // Use the found effects if they are valid
+          if (ruleEffects.isNotEmpty) {
+            return ability.copyWith(effects: ruleEffects);
+          }
+        }
+
+        // If not found, return the original ability object (with original/default effects)
+        return ability;
+      }).toList();
+
+      return data.copyWith(abilities: enrichedAbilities);
+    }
+
+    // Helper function to enrich a UnitEntry
+    UnitEntry _enrichUnit(UnitEntry unit) {
+      return unit.copyWith(
+        unitDetails: _enrichData(unit.unitDetails),
+        attachmentDetails: _enrichData(unit.attachmentDetails),
+      );
+    }
+
+    // 1. Apply enrichment to all parts of the list
+    final enrichedCommander = _enrichData(list.commanderDetails);
+    final enrichedCombatUnits = list.combatUnits.map(_enrichUnit).toList();
+    final enrichedNCUs = list.ncus.map(_enrichUnit).toList();
+
+    // 2. Update the ViewModel's state with the new, enriched ListPa
+    _listPa = list.copyWith(
+      commanderDetails: enrichedCommander,
+      combatUnits: enrichedCombatUnits,
+      ncus: enrichedNCUs,
+    );
+  }
+
+  // --- NEW METHOD TO RETRIEVE LATEST UNIT STATE (FIX) ---
+
+  /// Retrieves the current, up-to-date state of a unit from the ViewModel's listPa.
+  UnitEntry getUnitState(UnitEntry unit) {
+    final result = _findUnitAndList(
+      unitName: unit.unitName,
+      attachmentName: unit.attachmentName,
+    );
+
+    if (result == null) {
+      // Fallback: If the unit can't be found (e.g., list not loaded yet),
+      // return the unit provided in the argument.
+      return unit;
+    }
+
+    // Return the unit from the list in the ViewModel, which holds the latest state.
+    return result.unitList[result.index];
+  }
+
   // --- WOUND & TACTICAL STATE INITIALIZATION (Replaces _applyWoundCorrection) ---
 
   /// Initializes all units in the list by setting their current tracking state
@@ -77,8 +205,7 @@ class HomeViewModel extends ChangeNotifier {
   ListPa _initializeUnitTacticalState(ListPa list) {
     // 1. Initialize Combat Units
     final List<UnitEntry> initializedCombatUnits = list.combatUnits.map((unit) {
-      // FIX: DO NOT apply the heuristic that forces wounds to 12.
-      // Trust the unit's baseWounds property (e.g., 4 for a monster).
+      // Trust the unit's baseWounds property (e.g., 4 for monster).
       return unit.copyWith(
         currentWounds: 0,
         isActivated: false,
@@ -86,7 +213,6 @@ class HomeViewModel extends ChangeNotifier {
         defenseModifier: 0,
         defenseDiceModifier: 0,
         moraleModifier: 0,
-        // The UnitDetails model remains unchanged, preserving the correct baseWounds.
       );
     }).toList();
 
@@ -135,37 +261,38 @@ class HomeViewModel extends ChangeNotifier {
     if (attackProfile.dice.isEmpty) return 0;
 
     // 2. Determine the current Rank based on Wounds Taken
-    int rankIndex = 0; // Default to Rank 3 strength (0 wounds taken)
+    int rankIndex = 0; // Default to Rank 3 strength (index 0)
 
-    if (maxWounds >= 12) {
-      // Logic for standard 12-wound units (Infantry/Cavalry)
-      final isCavalry = details.tray?.toLowerCase() == 'cavalry';
-      // Wounds remaining threshold to drop to Rank 2 (index 1)
-      final rank2Threshold = isCavalry
-          ? 6
-          : 8; // 6 if Cav (6 wounds lost), 8 if Inf (4 wounds lost)
-      // Wounds remaining threshold to drop to Rank 1 (index 2)
-      final rank1Threshold = isCavalry
-          ? 0
-          : 4; // 0 if Cav (12 wounds lost), 4 if Inf (8 wounds lost)
+    if (maxWounds == 12) {
+      // FIX: Standard 12-Wound Rank Degradation (Infantry/Cavalry)
+      // Rank index increases (power drops) every 4 wounds lost.
+      final woundsLost = unit.currentWounds;
 
-      if (woundsRemaining <= rank2Threshold &&
-          woundsRemaining > rank1Threshold) {
-        rankIndex = 1; // Rank 2 strength
-      } else if (woundsRemaining <= rank1Threshold && woundsRemaining >= 1) {
-        rankIndex = 2; // Rank 1 strength
+      // Calculated index assumes a full 3-rank system (0, 1, 2)
+      // 0-3 lost -> index 0 (Rank 3 strength)
+      // 4-7 lost -> index 1 (Rank 2 strength)
+      // 8-11 lost -> index 2 (Rank 1 strength)
+      int calculatedRankIndex = (woundsLost / 4).floor();
+
+      // Clamp the calculated rank index to the size of the available dice array.
+      // This automatically handles Cavalry units that only provide 2 ranks (max index 1).
+      rankIndex = calculatedRankIndex.clamp(0, attackProfile.dice.length - 1);
+    } else if (maxWounds > 1) {
+      // Logic for other multi-wound units (Monsters, Solos, Non-Standard Cavalry)
+
+      // We assume a simple half-wounds threshold if multiple ranks are available.
+      if (attackProfile.dice.length > 1) {
+        final halfWounds = maxWounds / 2;
+        if (unit.currentWounds > halfWounds) {
+          // Drop to the next rank (index 1) once half wounds are lost
+          rankIndex = 1;
+        }
       }
+      // Clamp to ensure we don't exceed the provided dice array size
+      rankIndex = rankIndex.clamp(0, attackProfile.dice.length - 1);
     } else {
-      // Logic for low-wound units (Monsters, Solo units, etc. - e.g. 4 wounds)
-      // If the unit has a fixed number of wounds (like 4), it typically doesn't degrade.
-      // We assume it uses the maximum dice count (index 0) until destroyed.
+      // Single wound unit (Monsters, Solos, etc. with baseWounds <= 1)
       rankIndex = 0;
-    }
-
-    // Safety check: ensure the index is within the bounds of the dice array
-    if (rankIndex >= attackProfile.dice.length) {
-      // For low-wound units that only have one dice entry, this falls back to the first.
-      rankIndex = attackProfile.dice.length - 1;
     }
 
     // 3. Return the calculated dice count for the current rank
@@ -225,7 +352,7 @@ class HomeViewModel extends ChangeNotifier {
     return (baseDice + unit.defenseDiceModifier).clamp(1, 10);
   }
 
-  // --- NCU ABILITIES GETTER ---
+  // --- NCU ABILITIES GETTER (For UI display) ---
 
   /// Retrieves and formats the rules/effects of the unit (NCU or Combat Unit)
   /// and its attachment for display.
@@ -235,9 +362,18 @@ class HomeViewModel extends ChangeNotifier {
     void formatAbilities(ArmyUnitData? data) {
       if (data == null || data.abilities.isEmpty) return;
 
-      // Format each ability name and its effect into a single string
-      data.abilities.forEach((name, effect) {
-        descriptions.add('**$name**: $effect');
+      data.abilities.forEach((ability) {
+        final name = ability.name;
+
+        // FIX: Removed the embedded usageStatus [CLICK TO USE] from the string.
+        // The UI (UnitDetailsScreen) must now determine the status and
+        // display the button/status text based on the clean ability name.
+
+        // Join the effects list.
+        final effect = ability.effects.join('\n');
+
+        // Send a clean string to the UI
+        descriptions.add('**$name**:\n$effect');
       });
     }
 
@@ -250,6 +386,17 @@ class HomeViewModel extends ChangeNotifier {
     return descriptions;
   }
 
+  // --- IMAGE PATH GETTER ---
+
+  /// Generates the local asset path for the unit's image based on its unique ID.
+  String getUnitImagePath(ArmyUnitData? data, {required String type}) {
+    if (data == null || data.id == null || data.id!.isEmpty) {
+      return 'standees/placeholder_$type.jpg';
+    }
+
+    return 'standees/${data.id}.jpg';
+  }
+
   // --- CORE LIST PARSING & LOADING ---
 
   Future<void> parseArmyList(String rawArmyListText) async {
@@ -260,15 +407,21 @@ class HomeViewModel extends ChangeNotifier {
     _listPa = null; // Clear previous data
 
     try {
-      // 1. Call the repository to parse and fetch details
+      // 1. CRITICAL: Ensure the ability cache is loaded and normalized first.
+      await _abilityRepository.fetchAndCacheAllAbilityEffects();
+
+      // 2. Call the repository to parse and fetch unit details (backend call)
       ListPa result = await _repository.parseListAndFetchDetails(
         rawArmyListText,
       );
 
-      // 2. INITIALIZE TACTICAL STATE (removes the incorrect 12-wound fix)
-      _listPa = _initializeUnitTacticalState(result);
+      // 3. INITIALIZE TACTICAL STATE (applies default wounds/modifiers)
+      ListPa initializedList = _initializeUnitTacticalState(result);
 
-      // 3. Data is ready, trigger navigation
+      // 4. Enrich abilities using the dedicated repository call
+      await _enrichAbilitiesInList(initializedList);
+
+      // 5. Data is ready, trigger navigation
       if (_listPa != null) {
         navigateToDetails.value = _listPa;
       }
@@ -346,7 +499,7 @@ class HomeViewModel extends ChangeNotifier {
         );
 
     // --- WOUND CLAMPING FIX ---
-    // If we're updating wounds, ensure they don't exceed max wounds (which is unitDetails.baseWounds)
+    // Max wounds depends on unitDetails.baseWounds (which should now be correctly loaded)
     final maxWounds = unitToUpdate.unitDetails?.baseWounds ?? 12;
     int wounds = currentWounds ?? unitToUpdate.currentWounds;
     wounds = wounds.clamp(0, maxWounds);
@@ -462,9 +615,12 @@ class HomeViewModel extends ChangeNotifier {
     );
   }
 
-  /// Resets the activation status for all units on the list.
+  /// Resets the activation status for all units and ability usage for the start of a new round.
   void resetAllActivations() {
     if (_listPa == null) return;
+
+    // CRITICAL: Clear all ability usage tracking
+    _abilityActivationState.clear();
 
     List<UnitEntry> resetList(List<UnitEntry> units) {
       return units.map((unit) {

@@ -4,14 +4,24 @@ import 'package:provider/provider.dart';
 import 'package:squire/view_models/home_view_model.dart';
 import 'package:squire/view/home_screen.dart';
 import 'package:squire/data/repositories/unit_repository.dart';
+import 'package:squire/data/repositories/Ability_Repository.dart';
 
 void main() {
+  // CRITICAL: Ensure the locator is set up before runApp tries to use it.
   setupLocator();
+
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(
-          create: (_) => HomeViewModel(repository: locator<UnitRepository>()),
+          // Dependencies are fetched from GetIt here.
+          create: (_) => HomeViewModel(
+            repository: locator<UnitRepository>(),
+            abilityRepository:
+                locator<
+                  AbilityRepository
+                >(), // Requires AbilityRepository to be registered
+          ),
         ),
       ],
       child: const MyApp(),
