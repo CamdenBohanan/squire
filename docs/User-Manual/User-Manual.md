@@ -61,6 +61,8 @@ Non-Combat Unit :
 • Daenerys Targaryen - Khaleesi (4)
 • Barristan Selmy - Advisor to the Dragon (5)
 
+(You can use some other examples in the test_armies folder)
+
 
 ### B. Submitting the List
 

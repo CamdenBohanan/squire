@@ -73,7 +73,7 @@ class ArmyListLoadedScreen extends StatelessWidget {
       backgroundColor: _scaffoldBackground, // Apply dark background
       appBar: AppBar(
         title: Text(
-          'Tactical Tracker',
+          'Tactical View',
           style: TextStyle(
             fontFamily: 'Tuff', // Applied custom font
             fontSize: 24,
